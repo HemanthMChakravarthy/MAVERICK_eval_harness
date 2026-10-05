@@ -234,7 +234,7 @@ def make_figures(results, agg, figdir: Path) -> None:
                  [agg[c]["tc"]["hi"] for c in cids],
                  "traceability completeness (TC)",
                  "Final traceability completeness by configuration (mean ± 95% bootstrap CI)")
-    ax.set_ylim(0.9, 1.02)
+    ax.set_ylim(0, 1.02)
     fig.tight_layout()
     fig.savefig(figdir / "tc_by_config.png", dpi=150)
     plt.close(fig)
@@ -246,7 +246,7 @@ def make_figures(results, agg, figdir: Path) -> None:
                  [agg[c]["first_pass_tc"]["hi"] for c in cids],
                  "first-pass TC",
                  "First-pass TC: prescope invariants on first production (mean ± 95% CI)")
-    ax.set_ylim(0.85, 1.02)
+    ax.set_ylim(0, 1.02)
     fig.tight_layout()
     fig.savefig(figdir / "firstpass_tc_by_config.png", dpi=150)
     plt.close(fig)
@@ -287,14 +287,18 @@ def make_figures(results, agg, figdir: Path) -> None:
     fig.savefig(figdir / "violations_by_config.png", dpi=150)
     plt.close(fig)
 
-    # Structural vs semantic escape split (pooled counts).
+    # Structural vs semantic vs link-integrity escape split (pooled counts).
     fig, ax = plt.subplots(figsize=(10, 4.5))
     x = np.arange(len(cids))
     struct = [sum(r.n_leaked_structural for r in results[c]) for c in cids]
-    sem = [sum(r.n_leaked_semantic for r in results[c]) for c in cids]
+    linkint = [sum(r.n_leaked_link_integrity for r in results[c]) for c in cids]
+    # n_leaked_semantic includes link-integrity; subtract for pure semantic.
+    sem = [sum(r.n_leaked_semantic for r in results[c]) - li
+           for c, li in zip(cids, linkint)]
     ax.bar(x, struct, label="structural escapes", color="#4C78A8", edgecolor="black")
-    ax.bar(x, sem, bottom=struct, label="semantic escapes (incl. link-integrity)",
-           color="#F58518", edgecolor="black")
+    ax.bar(x, sem, bottom=struct, label="semantic escapes", color="#F58518", edgecolor="black")
+    ax.bar(x, linkint, bottom=[s + m for s, m in zip(struct, sem)],
+           label="link-integrity escapes", color="#54A24B", edgecolor="black")
     ax.set_xticks(x)
     ax.set_xticklabels(dlabels, rotation=20, ha="right")
     ax.set_ylabel("escaped defects (pooled over seeds)")
@@ -594,6 +598,43 @@ def run_sensitivity_sweeps(seeds: List[int], outdir: Path) -> Dict:
         fig.tight_layout()
         fig.savefig(figdir / f"sweep_{param}.png", dpi=150)
         plt.close(fig)
+
+    # Two-way sweep: human recall x critic recall grid (reviewer request).
+    # Shows the interaction: leakage is driven by the weaker of the two.
+    hr_vals = [0.7, 0.8, 0.9]
+    cr_vals = [0.5, 0.7, 0.9]
+    grid_leak = {}
+    for hr in hr_vals:
+        for cr in cr_vals:
+            overrides = {
+                "human_catch_struct": min(hr + 0.05, 0.99),
+                "human_catch_sem": hr,
+                "critic_recall": cr,
+            }
+            runs = [run_experiment("M", s, overrides=overrides) for s in seeds]
+            leak = sum(r.n_leaked for r in runs) / max(1, sum(r.n_injected for r in runs))
+            grid_leak[(hr, cr)] = leak
+            print(f"  2-way sweep hr={hr}, cr={cr}: pooled leakage={leak:.3f}")
+
+    # Two-way heatmap figure.
+    fig, ax = plt.subplots(figsize=(7, 5))
+    leak_matrix = [[grid_leak[(hr, cr)] for cr in cr_vals] for hr in hr_vals]
+    im = ax.imshow(leak_matrix, cmap="YlOrRd", aspect="auto", vmin=0)
+    ax.set_xticks(range(len(cr_vals)))
+    ax.set_yticks(range(len(hr_vals)))
+    ax.set_xticklabels([f"{v:.1f}" for v in cr_vals])
+    ax.set_yticklabels([f"{v:.1f}" for v in hr_vals])
+    ax.set_xlabel("critic recall")
+    ax.set_ylabel("human recall (semantic)")
+    ax.set_title("M-full pooled leakage: human x critic recall")
+    for i in range(len(hr_vals)):
+        for j in range(len(cr_vals)):
+            ax.text(j, i, f"{leak_matrix[i][j]:.3f}",
+                    ha="center", va="center", fontsize=9)
+    fig.colorbar(im, ax=ax, label="pooled leakage")
+    fig.tight_layout()
+    fig.savefig(figdir / "sweep_2way.png", dpi=150)
+    plt.close(fig)
 
     # Break-even: human recall at which M-full total cost exceeds B0's.
     be_lines, crossover = _break_even(seeds)

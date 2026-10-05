@@ -409,6 +409,32 @@ class Experiment:
         self._register(env, [], [], asil)
         return env
 
+    def _record_test_result(self, test_env, verdict: str, prov: dict,
+                            extra: Optional[dict] = None):
+        """Record a Result for a test, honoring T1/T4 defect flags.
+
+        T1 (missing-result): skip recording entirely (I9 violation).
+        T4 (dangling-result-link): record then mutate the link to dangle (I10).
+        Returns the Result envelope, or None if T1 skipped.
+        """
+        if test_env.payload.get("_t1_skip_result"):
+            return None
+        res_env = self._record_result(
+            test_env.id, verdict, test_env.asil, prov, extra=extra
+        )
+        if test_env.payload.get("_t4_dangle_result"):
+            res_latest = self.ledger.latest(res_env.id)
+            dangling_links = [Link("result-of", "GHOST-TEST-999")]
+            new_res = self.ledger.new_version(
+                res_env.id, payload=res_latest.payload,
+                links=dangling_links, prov=prov,
+                asil=res_latest.asil,
+                change_note="T4: dangling result-of link",
+            )
+            self._register(new_res, [], [], res_latest.asil)
+            return new_res
+        return res_env
+
     # ------------------------------------------------------------------ #
     # pipeline stages
     # ------------------------------------------------------------------ #
@@ -534,10 +560,10 @@ class Experiment:
         self._review_minutes += reviewed
 
         # Result re-record for tests: the verdict follows the tested
-        # artifact's current defect state (I11).
+        # artifact's current defect state (I11). T1/T4 flags honored.
         if env.atype in TEST_TYPES:
-            self._record_result(
-                env.id, self._test_verdict(key), env.asil, self._prov("TSA-R")
+            self._record_test_result(
+                env, self._test_verdict(key), self._prov("TSA-R")
             )
 
         # Phase D: promotion decision promote(E).
@@ -607,8 +633,9 @@ class Experiment:
                                         self._prov("TSA-R"))
         self.ledger.promote_to_baselined(key, approver)
 
-        # B4: advisory invariant post-check -- findings are recorded (and
-        # triaged at 5 minutes each) but trigger no rework and block nothing.
+        # B4: advisory invariant post-check -- findings trigger rework (the
+        # artifact is fixed) but do not block promotion. This models "we run
+        # the checks and act on findings, but nothing blocks".
         if cfg.advisory_checks:
             findings = check_envelope(
                 self.ledger, key, only=GATE_PRECHECKS[gate_id]
@@ -616,7 +643,18 @@ class Experiment:
             if findings:
                 rec.advisory += len(findings)
                 self._advisory_findings += len(findings)
-                rec.minutes += 5.0 * len(findings)
+                rec.minutes += 5.0 * len(findings)  # triage
+                # Findings trigger rework: structural defects identified by
+                # the checks are marked detected (not leaked).
+                for d in list(remaining):
+                    spec = faults.get(d)
+                    if spec.kind == "structural":
+                        self._rec_by_defect[d].detected = True
+                        self._rec_by_defect[d].detected_by = "advisory"
+                        self._rec_by_defect[d].detected_gate = gate_id
+                        remaining.remove(d)
+                        rec.minutes += 30.0  # rework per advisory-found defect
+                        rec.retries += 1
 
         for d in remaining:  # never detected -> leaked downstream
             self._rec_by_defect[d].leaked = True
@@ -927,15 +965,16 @@ class Experiment:
             # Record the result BEFORE the test is processed: I9 (recorded),
             # I10 (result-of link) and I11 (verdict "pass") are pre-promotion
             # checks. The verdict follows the tested unit's defect state.
-            res_env = self._record_result(
-                test_id, self._test_verdict(env.key), unit_env.asil,
-                self._prov("CA"),
+            # T1/T4 flags honored via _record_test_result.
+            res_env = self._record_test_result(
+                env, self._test_verdict(env.key), self._prov("CA"),
                 extra={"coverage": cov, "shortfalls": short},
             )
             self._process_artifact(env.key, "H4", rec, cov_ok=cov_ok)
             rec.produced += 1
-            self._process_artifact(self.ledger.latest(res_env.id).key, "H4", rec)
-            rec.produced += 1
+            if res_env is not None:
+                self._process_artifact(self.ledger.latest(res_env.id).key, "H4", rec)
+                rec.produced += 1
         self._handle_omissions("H4", rec)
         if self._branch_covs:
             rec.coverage_min_branch = min(self._branch_covs)
@@ -945,34 +984,41 @@ class Experiment:
         rec = GateRecord("H5")
         rigor = COVERAGE_RIGOR[self.cfg.config_id]
         # Component verification (SWE.5), distinct from integration testing:
-        # one CompTest per unit (I8).
-        for spec in self.cs.units:
-            if spec.uid not in self.ledger:
+        # one CompTest per architectural component (I8 quantifies over
+        # SwArch kind="component", not SwUnit).
+        for arch_spec in [a for a in self.cs.arch if a.kind == "component"]:
+            if arch_spec.aid not in self.ledger:
                 continue  # omitted and leaked
-            unit_env = self.ledger.latest(spec.uid)
-            test_id = f"CT-{spec.uid}"
+            arch_env = self.ledger.latest(arch_spec.aid)
+            test_id = f"CT-{arch_spec.aid}"
             req = ProductionRequest(
                 "H5", "comptest", test_id,
-                template={"text": f"Component test for {spec.uid}",
+                template={"text": f"Component test for {arch_spec.aid}",
                           "method": "component requirements-based test"},
-                links=[Link("verifies", spec.uid),
-                       Link("verifies-design", self._design_id(spec.arch))],
-                asil=unit_env.asil, candidates=[],
+                links=[Link("verifies", arch_spec.aid),
+                       Link("verifies-design", self._design_id(arch_spec.aid))],
+                asil=arch_env.asil, candidates=[],
             )
             res = self.agents["TSA-I"].produce(req, self.rng_inject)
+            # T2 defect: omit the CompTest for the targeted component.
+            if res.omitted:
+                for d in res.injected:
+                    self._record_injection(d, "H5", test_id)
+                continue
             env = Envelope(id=test_id, atype="CompTest", ver=1, asil=res.asil,
                            payload=res.payload, links=res.links,
                            prov=self._prov("TSA-I"))
             self.ledger.append(env)
             self._register(env, res.injected, [],
-                           self._correct[unit_env.key][2])
-            res_env = self._record_result(
-                test_id, self._test_verdict(env.key), unit_env.asil,
-                self._prov("TSA-I"))
+                           self._correct[arch_env.key][2] if arch_env.key in self._correct else (None, None, None))
+            res_env = self._record_test_result(
+                env, self._test_verdict(env.key), self._prov("TSA-I")
+            )
             self._process_artifact(env.key, "H5", rec)
             rec.produced += 1
-            self._process_artifact(self.ledger.latest(res_env.id).key, "H5", rec)
-            rec.produced += 1
+            if res_env is not None:
+                self._process_artifact(self.ledger.latest(res_env.id).key, "H5", rec)
+                rec.produced += 1
         # Integration tests, one per interface. The verifies-design link
         # points at the detailed design of the first component (fixture
         # convention): the integration test exercises that design's
@@ -1141,7 +1187,9 @@ class Experiment:
         defect with probability ``audit_recall``; every found issue costs
         ``audit_rework_minutes`` of rework. The audit cannot block the
         release: found defects were still gate-pipeline escapes, so
-        ``leaked`` stays True. Returns the number of audit-found defects.
+        ``leaked`` stays True. Correlated failure (``corr_p``) applies: with
+        probability corr_p the auditor shares the generator's blind spot and
+        misses the defect. Returns the number of audit-found defects.
         """
         rec = gate_records[-1]  # audit effort charged to H6
         n_artifacts = len(self.ledger.latest_map())
@@ -1149,6 +1197,9 @@ class Experiment:
         found = 0
         for irec in self.records:
             if irec.leaked and not irec.detected:
+                # Correlated failure: auditor shares generator's blind spot.
+                if self.rng_review.random() < self.cfg.corr_p:
+                    continue
                 if self.rng_review.random() < self.cfg.audit_recall:
                     irec.detected = True
                     irec.detected_by = "audit"

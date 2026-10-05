@@ -178,15 +178,17 @@ CONFIGS: Dict[str, PipelineConfig] = {
         name="LLM + advisory invariant checks",
         description="LLM pipeline; invariant checks run as non-blocking post-checks.",
         notes=(
-            "Models 'we run the checks but nothing blocks': every artifact is "
-            "produced by the LLM pipeline (inject_p=0.45), invariant checks "
-            "run post-promotion and record advisory findings (charged 5 "
-            "reviewer-minutes each) but trigger no rework. Human review "
-            "catches 90%/85% at reduced effort (effort_scale=0.5)."
+            "Models 'we run the checks but findings trigger rework without "
+            "blocking': every artifact is produced by the LLM pipeline "
+            "(inject_p=0.75, same as M/B1/B2), invariant checks run "
+            "post-promotion and findings trigger rework (charged 5 "
+            "reviewer-minutes each plus rework) but do not block promotion. "
+            "Human review catches 90%/85% at reduced effort "
+            "(effort_scale=0.5)."
         ),
         ledger_checks=False, supervisor_policy=True, critic_enabled=False,
         different_person_enforced=True, coverage_enforced=False,
-        inject_p=0.45, advisory_checks=True,
+        inject_p=0.75, advisory_checks=True,
         human_catch_struct=0.90, human_catch_sem=0.85, effort_scale=0.5,
         authoring_scale=0.05,
     ),
@@ -195,18 +197,21 @@ CONFIGS: Dict[str, PipelineConfig] = {
         name="LLM + post-hoc audit",
         description="LLM pipeline plus a Sameh & Elbanna-style post-hoc audit.",
         notes=(
-            "LLM pipeline (inject_p=0.45) with light human review; after "
-            "release-equivalent (H6) a manual audit pass finds escaped "
-            "defects with recall 0.85 (assumption inspired by Sameh & Elbanna "
-            "2026) at 10 reviewer-minutes per artifact, and each found issue "
-            "costs 45 minutes of rework. The audit cannot block: defects it "
-            "finds still count as gate-pipeline escapes (leaked=True)."
+            "LLM pipeline (inject_p=0.75, same as M/B1/B2) with light human "
+            "review; after release-equivalent (H6) a manual audit pass finds "
+            "escaped defects with recall 0.85 (assumption; sensitivity swept "
+            "in Section VI) at 10 reviewer-minutes per artifact, and each "
+            "found issue costs 45 minutes of rework. The audit cannot block: "
+            "defects it finds still count as gate-pipeline escapes "
+            "(leaked=True). Correlated failure (corr_p) applies to the "
+            "auditor: with probability corr_p the auditor misses a defect "
+            "together with the generator."
         ),
         ledger_checks=False, supervisor_policy=False, critic_enabled=False,
         different_person_enforced=True, coverage_enforced=False,
-        inject_p=0.45, audit_pass=True,
+        inject_p=0.75, audit_pass=True,
         human_catch_struct=0.90, human_catch_sem=0.85, effort_scale=0.3,
-        authoring_scale=0.05,
+        authoring_scale=0.05, corr_p=0.2,
     ),
     "M": PipelineConfig(
         config_id="M",
