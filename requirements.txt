@@ -1,0 +1,7 @@
+# Pinned dependencies for MAVERICK_eval_harness v2.
+#
+# The simulation needs only matplotlib and numpy, and makes no network calls.
+matplotlib>=3.6,<4
+numpy>=1.24,<3
+# Test suite:
+pytest>=7.0
