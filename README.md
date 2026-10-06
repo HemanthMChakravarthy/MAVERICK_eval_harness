@@ -18,7 +18,7 @@ structural coverage, and human review effort.
 ```bash
 pip install -r requirements.txt
 python run.py --quick        # smoke: configs B2 x M, 3 seeds
-python run.py --seeds 12 --out results   # full: 10 configs x 12 seeds (AEB fixture)
+python run.py --seeds 500 --out results  # full: 10 configs x 500 seeds
 python run.py --sweep        # one-way sensitivity sweeps + break-even (M-full, 6 seeds)
 python run.py --asild        # ASIL-D fixture: M, B0, M-nopolicy x 12 seeds
 pytest tests/                # unit + smoke tests
@@ -31,7 +31,7 @@ CSVs, `figures/*.png`.
 
 One run = one `(config, fixture, seed)` tuple, fully deterministic. Gates H1–H6
 execute in order; at each gate the role agent produces its artifacts from the
-worked-example templates, seeded defects from the 15-class catalog may be injected,
+worked-example templates, seeded defects from the 19-class catalog may be injected,
 and the configuration's mechanisms engage:
 
 1. **Deterministic checks** — ledger invariant checks (I1–I11) pre-promotion,
@@ -60,7 +60,7 @@ maverick/
   invariants.py   I1–I11 as deterministic graph queries (deduplicated), TC metric
   gates.py        H1–H6 gate specs as data: per-ASIL methods, coverage targets,
                   METHOD_RIGOR calibration, promote() decision rule
-  faults.py       15-class seeded defect catalog (6 structural + 6 semantic +
+  faults.py       19-class seeded defect catalog (6 structural + 6 semantic +
                   3 link-integrity: W1/W2/R1, invisible to existence checks)
   case_study.py   SYNTHETIC worked-example fixtures: AEB (ASIL-B/QM) and
                   ASIL-D steering-torque arbitration
@@ -86,7 +86,7 @@ tests/test_smoke.py
 | B1 | Single LLM agent | Correlated cross-step defects, self-review possible, no checks |
 | B2 | Unsupervised multi-agent, shared pool | Defect amplification downstream, no checks |
 | B3 | Human + ALM link checks | Humans author; ALM catches missing links only (never W1/W2/R1) |
-| B4 | LLM + advisory invariant checks | Post-checks are non-blocking; findings triaged, nothing reworked |
+| B4 | LLM + advisory invariant checks | Advisory findings trigger rework (non-blocking); structural defects repaired |
 | B5 | LLM + post-hoc audit | Audit finds (recall 0.85) but cannot block; found issues cost rework |
 | M | Full MAVERICK | Ledger + policy + critic + enforced human gates + coverage |
 | M-noledger | M minus ledger protocol | Structural defects leak (policy subset + humans only) |
@@ -113,9 +113,9 @@ See `configs.py` `notes` and `results/ASSUMPTIONS.md` for the full assumption re
 - **Coverage is a stub with explained variation.** Achieved coverage depends on the
   configuration's verification rigor (documented assumption); RQ3 reports achieved
   vs ASIL-indexed target honestly.
-- **Small-n statistics.** Full mode uses 12 seeds; treat CIs, Wilcoxon/Holm, and
+- **Statistics.** Full mode uses 500 seeds; treat CIs, Wilcoxon/Holm, and
   Cliff's delta as simulation-sensitivity indicators. Cliff's delta is the primary
-  effect size at n=12.
+  effect size at n=500.
 
 ## Plugging in a real LLM later (optional, not built)
 
