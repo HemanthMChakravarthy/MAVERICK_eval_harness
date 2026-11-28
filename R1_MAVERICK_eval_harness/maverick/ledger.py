@@ -33,16 +33,25 @@ class Artifact:
 class Ledger:
     def __init__(self):
         self.a: dict[str, Artifact] = {}
+        # Immutable in-memory snapshots of every accepted revision. This is a
+        # verifiable local history, not a signed or externally anchored audit log.
+        self.history: dict[str, list[Artifact]] = {}
 
     # ---------------- construction / hash chain ----------------
     def add(self, art: Artifact):
+        if art.id in self.a:
+            raise ValueError(f"duplicate artifact id: {art.id}")
         art.h = self._hash(art)
         self.a[art.id] = art
+        self.history[art.id] = [copy.deepcopy(art)]
 
     @staticmethod
     def _hash(art: Artifact) -> str:
-        body = json.dumps({"payload": art.payload, "links": sorted(art.links), "asil": art.asil},
-                          sort_keys=True) + art.h_prev
+        body = json.dumps({
+            "id": art.id, "type": art.type, "asil": art.asil, "kind": art.kind,
+            "payload": art.payload, "links": sorted(art.links), "ver": art.ver,
+            "h_prev": art.h_prev
+        }, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(body.encode()).hexdigest()
 
     def revise(self, aid: str, **changes):
@@ -55,15 +64,27 @@ class Ledger:
         new.h_prev = art.h
         new.h = self._hash(new)
         self.a[aid] = new
+        self.history.setdefault(aid, []).append(copy.deepcopy(new))
         for d in self.descendants(aid):
             self.a[d].status = "suspect"
         return new
 
     def chain_ok(self, art: Artifact) -> bool:
-        return art.h == self._hash(art)
+        """Verify the supplied current record and all locally retained revisions."""
+        hist = self.history.get(art.id, [])
+        if not hist or art.id not in self.a or self.a[art.id] != art:
+            return False
+        prev = ""
+        for expected_ver, record in enumerate(hist, start=1):
+            if record.ver != expected_ver or record.h_prev != prev:
+                return False
+            if record.h != self._hash(record):
+                return False
+            prev = record.h
+        return hist[-1].h == art.h and art.h == self._hash(art)
 
     def copy(self) -> "Ledger":
-        L = Ledger(); L.a = copy.deepcopy(self.a); return L
+        L = Ledger(); L.a = copy.deepcopy(self.a); L.history = copy.deepcopy(self.history); return L
 
     # ---------------- queries ----------------
     def of(self, t, kind=None):
@@ -157,11 +178,11 @@ class Ledger:
                 V["I9"].add(t.id)
         # I10 result traceability
         for res in RES:
-            if not self.valid_targets(res, "result-of"):
+            if not self.valid_targets(res, "result-of", {"UnitTest", "CompTest", "IntTest", "QualTest"}):
                 V["I10"].add(res.id)
         # I11 pass requirement
         for res in RES:
-            if res.payload.get("verdict", "pass") != "pass":
+            if res.payload.get("verdict") != "pass":
                 V["I11"].add(res.id)
         return V
 
