@@ -1,61 +1,54 @@
-# MAVERICK evaluation harness — Revision R1 (v2.0)
+# MAVERICK evaluation harness — Revision R1 (release v2.1.1)
 
-This folder is the revision-stage update of the MAVERICK simulation harness prepared in response to the IEEE Systems Journal review of manuscript ISJ-RE-26-22934.
+This folder is the revision-stage update of the MAVERICK simulation harness
+prepared in response to the IEEE Systems Journal review of manuscript
+ISJ-RE-26-22934. It is intended to be added to the repository
+`HemanthMChakravarthy/MAVERICK_eval_harness` as the top-level folder
+`R1_MAVERICK_eval_harness/` and tagged `v2.1.1`. **No LLM is invoked anywhere.**
 
-The implementation is located at:
+## What changed relative to v1.x
 
-```text
-R1_MAVERICK_eval_harness/
-├── maverick/
-├── results/
-├── tests/
-├── README.md
-├── ASSUMPTIONS_R1.md
-└── CHANGELOG_R1.md
-```
-
-Run all commands in this directory. **No LLM is invoked anywhere.**
-
-## What changed relative to R0
-
-| Reviewer concern | What R1 adds |
+| Reviewer concern | What v2.0 adds |
 |---|---|
-| Separate mechanism correctness from performance improvement | `tests/test_mechanisms.py` and the mechanism verification matrix |
-| Results depend on author-chosen parameters | Global uncertainty analysis over 15 behavioral parameters |
-| Baseline definitions require clarification | Explicit mechanism-emulation baselines and relabelled negative controls |
-| Retries are unexplained | Per-iteration retry accounting by source |
-| Post-hoc audit recall is fixed | Audit recall sweep and separate field-escape reporting |
+| Separate "mechanism works as designed" from "performance improves" | `tests/test_mechanisms.py` (16 deterministic checks) and `mechanism_matrix.csv`: an executable ledger (I1–I11 as graph queries, metadata-inclusive SHA-256 revision chain with local history verification, suspect propagation) is mutated by each fault class and the invariant verdicts are *computed*, not sampled. |
+| Results depend on author-chosen parameters | Global uncertainty analysis (`gua_points.csv`): 16 behavioural parameters varied jointly by Latin-hypercube sampling (256 points × 100 seeds × 10 configurations), win-rates and PRCC sensitivity indices. Outcomes that never vary are classified as *enforced by construction*. |
+| B2 is not MetaGPT | B2 is relabelled a negative control. Three new **mechanism emulations** (B6 SOP/structured-document MAS, MetaGPT-like; B7 chat-chain with reviewer and dehallucination, ChatDev-like; B8 conversable agents with human-in-the-loop by the prompting engineer, AutoGen-like) model the published handoff/validation mechanisms. They are *not* executions of those frameworks. |
+| B4 retries unexplained | Retries are now counted per rework iteration **and by source** (`r_invariant`, `r_critic`, `r_test`, `r_human`, `r_llm_review`, `r_release`, `r_self`). A test asserts that B4's advisory invariant findings never trigger rework. |
+| B5 recall fixed at 0.85 | `audit_sweep.csv`: audit recall 0.50–0.99; "field escapes" (escapes not found by the audit) reported separately from gate-pipeline leakage. |
 
 ## Reproduce
 
 ```bash
-cd R1_MAVERICK_eval_harness
-python -m maverick.experiments --out results
-python -m maverick.figures results
+python -m maverick_r1.experiments --out results_r1      # full run; GUA is computationally intensive
+python -m maverick_r1.figures results_r1
 python -c "import tests.test_mechanisms as T; [getattr(T,n)() for n in dir(T) if n.startswith('test_')]"
 ```
+Requires Python ≥ 3.10, numpy, scipy, pandas, matplotlib (pytest optional).
 
-The package name is `maverick`; it does not use the R1 folder name as a Python package name.
+## Outputs (`results_r1/`)
+`table_main.json` (Table IV of the revised paper), `effect_sizes.json`,
+`table_asild.json`, `effect_sizes_asild.json`, `equal_p.csv`, `corr_sweep.csv`,
+`audit_sweep.csv`, `mechanism_matrix.csv`, `gua_points.csv`, `summary.json`
+(break-even, GUA win-rates, PRCC, evidence classes), per-seed CSVs, figures.
 
-## Outputs
+## Relationship to earlier numbers
+v2.0 replaced the v1.x flag-based detection with an executable ledger. v2.1.x
+corrects the rework semantics and random-number design (see `CHANGELOG_R1_1.md`),
+so **v2.0 numbers must not be reused**. The revised manuscript reports v2.1.1
+numbers throughout, including the full 256-point x 100-seed GUA (`gua_points.csv`,
+`summary.json`), regenerated in about 7 minutes on one CPU core.
 
-`R1_MAVERICK_eval_harness/results/` contains:
+## Environment
+See `requirements.txt` (versions used for the published outputs) and the
+`environment` and `gua_design` records in `summary.json`.
 
-- `table_main.json`
-- `effect_sizes.json`
-- `table_asild.json`
-- `effect_sizes_asild.json`
-- `equal_p.csv`
-- `corr_sweep.csv`
-- `audit_sweep.csv`
-- `mechanism_matrix.csv`
-- `gua_points.csv`
-- `summary.json`
-- Per-seed CSV files
-- `fig2_leakage.png` and `fig3_gua.png`
-
-## Relationship to R0
-
-R1 is a clean re-implementation of the behavioral model documented in the revised manuscript. It replaces R0's flag-based defect handling with an executable ledger, while making each baseline and mechanism explicit.
-
-See [`ASSUMPTIONS_R1.md`](ASSUMPTIONS_R1.md) before interpreting the numbers.
+## Scope (read before citing)
+No LLM, human reviewer, or external agent framework is executed. Structural
+detection (Type A) is computed on executable graph mutations; semantic and
+link-integrity faults are marker mutations whose detection is sampled from
+assumed probabilities. B6-B8 are mechanism emulations inspired by published
+approaches, not executable reproductions or benchmark results of those
+frameworks. The local ledger history is hash-linked and verified locally; it is
+not a signed or externally anchored audit log. Effort figures are outputs of
+assumed minutes per artifact (LLM drafting factor 0.05). GUA ranges are
+plausible modelling ranges, not empirically calibrated distributions.
