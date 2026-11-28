@@ -27,7 +27,7 @@ BASE = dict(
     exec_feedback_factor=0.8,                            # B6-B8 tests derived in the same context
     same_agent_test_factor=0.3,                          # B1/B2 tests from the producing agent
     # rework
-    p_fix_llm=0.85, p_fix_human=0.95, k_retry=3, k_retry_asil_d=5,
+    p_fix_llm=0.85, p_fix_human=0.95, p_fix_escalation=0.95, k_retry=3, k_retry_asil_d=5,
     # ASIL-D policy rigor: second independent inspection layer
     asil_d_second_review=0.50,
     # post-hoc audit (B5)
