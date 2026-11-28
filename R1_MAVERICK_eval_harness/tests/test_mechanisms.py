@@ -60,3 +60,57 @@ def test_full_maverick_enforces_tc_and_zero_structural_escapes():
 def test_advisory_invariants_never_trigger_rework():
     for s in range(300):
         assert run_one("B4", s)["r_invariant"] == 0
+
+
+def test_hash_covers_identity_metadata_and_history():
+    L = aeb_fixture(); a = L.a["R3"]
+    assert L.chain_ok(a)
+    a.type = "SysReq"
+    assert not L.chain_ok(a)
+    L = aeb_fixture(); L.revise("R3", payload={"text": "changed"})
+    assert L.chain_ok(L.a["R3"])
+    L.history["R3"][0].payload["tampered"] = True
+    assert not L.chain_ok(L.a["R3"])
+
+def test_missing_test_verdict_fails_closed():
+    L = aeb_fixture(); L.a["RES-UT1"].payload = {}
+    assert "RES-UT1" in L.violations()["I11"]
+
+def test_failed_repair_and_failed_escalation_remain_escapes():
+    # Disable all probabilistic semantic controls and both repair paths.
+    P = dict(p_llm=0.75, p_fix_llm=0.0, p_fix_escalation=0.0,
+             critic_recall=0.0, test_scale=0.0, h_st=0.0, h_sm=0.0, h_li=0.0,
+             release_st=0.0, release_sm=0.0, release_li=0.0)
+    r = run_one("M", 23, P=P)
+    assert r["unresolved_detected"] > 0
+    assert r["escapes"] > 0
+
+def test_repair_probability_does_not_change_injection_count():
+    a = run_one("M", 101, P={"p_fix_llm": 0.0, "p_fix_escalation": 0.0})
+    b = run_one("M", 101, P={"p_fix_llm": 1.0, "p_fix_escalation": 1.0})
+    assert a["injected"] == b["injected"]
+
+def test_repair_probability_does_not_shift_detection_draws():
+    # With escalation always succeeding, every detected defect is resolved, so
+    # escapes depend only on detection draws. They must not change with the
+    # per-attempt repair probability (no random-stream coupling).
+    for cfg in ("M", "B3", "B6"):
+        for s in range(100):
+            a = run_one(cfg, s, P={"p_fix_llm": 0.60, "p_fix_human": 0.60, "p_fix_escalation": 1.0})
+            b = run_one(cfg, s, P={"p_fix_llm": 0.95, "p_fix_human": 0.95, "p_fix_escalation": 1.0})
+            assert a["escapes"] == b["escapes"] and a["injected"] == b["injected"]
+
+def test_unresolved_invariant_violation_holds_release_not_escape():
+    # If neither rework nor escalation resolves a structural defect that a
+    # blocking invariant detects, the release gate re-evaluates the invariant and
+    # withholds the release: the defect is neither contained nor released.
+    P = dict(p_fix_llm=0.0, p_fix_escalation=0.0, critic_recall=0.0, test_scale=0.0,
+             h_st=0.0, h_sm=0.0, h_li=0.0)
+    held = 0
+    for s in range(50):
+        r = run_one("M", s, P=P)
+        assert r["st"] == 0 and r["tc_final"] == 1.0
+        held += r["held"]
+    assert held > 0
+    # Without blocking invariants the same defects are released.
+    assert sum(run_one("B4", s, P=P)["st"] for s in range(50)) > 0
