@@ -7,6 +7,11 @@ from .params import BASE, AUTHOR_MIN, REVIEW_MIN, EFFORT
 from .configs import C
 
 _FIX = {}
+# Stable stream identifiers per control layer: the same layer draws the same
+# uniform for the same fault in every configuration (common random numbers),
+# independent of which other layers a configuration has.
+LAYER_ID = {"self": 1, "invariant": 2, "advisory": 3, "critic": 4, "llm_review": 5,
+            "test": 6, "human": 7, "human2": 8, "release": 9}
 def fixture(name):
     """Build fixture and pre-compute deterministic detection profiles of every (fault, target)."""
     if name not in _FIX:
@@ -24,7 +29,15 @@ def fixture(name):
 def run_one(cfg_name, seed, fx="aeb", P=None, return_detail=False):
     P = dict(BASE, **(P or {}))
     c = C[cfg_name]; F = fixture(fx)
-    rng = np.random.default_rng(seed)          # paired: same seed -> same RNG stream for every config
+    # Independent, reproducible streams prevent retry counts in one fault from
+    # shifting detection draws for later faults.  Fault/layer streams are keyed
+    # by stable identifiers so paired configurations share the same uniforms
+    # wherever the same event exists.
+    def event_rng(*keys):
+        return np.random.default_rng(np.random.SeedSequence([int(seed), *[int(k) for k in keys]]))
+    rng_inject = event_rng(101)
+    rng_policy = event_rng(303)
+    rng_coverage = event_rng(505)
     asil_d = F["asil"] == "D"
     k_retry = P["k_retry_asil_d"] if asil_d else P["k_retry"]
 
@@ -40,9 +53,9 @@ def run_one(cfg_name, seed, fx="aeb", P=None, return_detail=False):
     if c["correlated"]:
         share, pd = P["b1_degraded_share"], P["b1_p_degraded"]
         p_lo = max(0.0, (p - share * pd) / (1 - share))
-        p = pd if rng.random() < share else p_lo
+        p = pd if rng_inject.random() < share else p_lo
     order = sorted(range(len(NAMES)), key=lambda i: STAGE[NAMES[i]])
-    u_inj = rng.random(len(NAMES)); u_tgt = rng.random(len(NAMES))
+    u_inj = rng_inject.random(len(NAMES)); u_tgt = rng_inject.random(len(NAMES))
     injected = []
     n_up = 0
     for i in order:
@@ -51,12 +64,12 @@ def run_one(cfg_name, seed, fx="aeb", P=None, return_detail=False):
         if u_inj[i] < pe:
             choices = F["prof"][n]
             t, pk, pr = choices[int(u_tgt[i] * len(choices))]
-            injected.append((n, t, pr))
+            injected.append((n, t, pr, i))
             n_up += 1
 
     # first-pass TC (measured by the evaluator's ledger on every configuration)
     aff = set()
-    for n, t, pr in injected:
+    for n, t, pr, fault_idx in injected:
         aff |= pr["affected"]
     tc_first = 1 - len(aff) / F["n"]
 
@@ -75,7 +88,8 @@ def run_one(cfg_name, seed, fx="aeb", P=None, return_detail=False):
     escapes = []; caught_by = {}
     fix_p = P["p_fix_human"] if c["author"] == "human" else P["p_fix_llm"]
 
-    for n, t, pr in injected:
+    unresolved = 0; escal_resolved = 0; held = 0
+    for n, t, pr, fault_idx in injected:
         cat = CAT[n]
         layers = []   # (name, detect_prob, blocking)
         if c["self_review"]:
@@ -99,7 +113,7 @@ def run_one(cfg_name, seed, fx="aeb", P=None, return_detail=False):
             layers.append(("test", min(1.0, tp), True))
         if c["human"] in ("dp", "b0", "self"):
             kind = c["human"]
-            if kind == "dp" and not c["policy"] and rng.random() < P["p_self_approval"]:
+            if kind == "dp" and not c["policy"] and rng_policy.random() < P["p_self_approval"]:
                 kind = "self"
             layers.append(("human", hrec(cat, kind), True))
             if asil_d and c["policy"] and c["human"] == "dp":
@@ -107,12 +121,14 @@ def run_one(cfg_name, seed, fx="aeb", P=None, return_detail=False):
         if c["release_review"]:
             layers.append(("release", {"St": P["release_st"], "Sm": P["release_sm"], "LI": P["release_li"]}[cat], True))
 
-        escaped = True
-        crit_miss_corr = c["critic"] and rng.random() < P["corr"]   # shared blind spot with generator
+        escaped = True; hold = False
+        crit_miss_corr = c["critic"] and event_rng(606, fault_idx).random() < P["corr"]   # shared blind spot with generator
         for name, dp, blocking in layers:
+            layer_idx = LAYER_ID[name]
             if name == "critic" and crit_miss_corr:
                 continue
-            if rng.random() < dp:
+            layer_rng = event_rng(707, fault_idx, layer_idx)
+            if layer_rng.random() < dp:
                 if not blocking:
                     advisories += 1
                     continue
@@ -121,29 +137,45 @@ def run_one(cfg_name, seed, fx="aeb", P=None, return_detail=False):
                 if name == "critic":
                     crit_tp += 1
                 fixed = False
+                repair_rng = event_rng(808, fault_idx, layer_idx)
                 for _ in range(k_retry):
                     retries[key] += 1
-                    if rng.random() < fix_p:
+                    if repair_rng.random() < fix_p:
                         fixed = True; break
                 if not fixed:
                     escal += 1
-                escaped = False
-                caught_by[name] = caught_by.get(name, 0) + 1
-                break
+                    # Escalation is a separate human-resolution event. A failed
+                    # escalation leaves the defect in the residual population.
+                    if event_rng(909, fault_idx, layer_idx).random() < P["p_fix_escalation"]:
+                        fixed = True; escal_resolved += 1
+                if fixed:
+                    escaped = False
+                    caught_by[name] = caught_by.get(name, 0) + 1
+                    break
+                unresolved += 1
+                if name == "invariant":
+                    # A deterministic blocking check (ledger invariant or ALM
+                    # existence check) is re-evaluated at the release gate, so an
+                    # unresolved violation withholds the release instead of
+                    # escaping: counted as a held release, not as containment.
+                    hold = True
+                # Otherwise do not stop: a later independent control may still detect it.
+        if escaped and hold:
+            held += 1; escaped = False
         if escaped:
-            escapes.append((n, t, pr))
+            escapes.append((n, t, pr, fault_idx))
 
     # ---------------- release state ----------------
     aff_final = set()
-    for n, t, pr in escapes:
+    for n, t, pr, fault_idx in escapes:
         aff_final |= pr["affected"]
     tc_final = 1 - len(aff_final) / F["n"]
     esc_cat = {"St": 0, "Sm": 0, "LI": 0}
-    for n, t, pr in escapes:
+    for n, t, pr, fault_idx in escapes:
         esc_cat[CAT[n]] += 1
     audit_found = 0
     if c["audit"]:
-        audit_found = int(sum(rng.random() < P["audit_recall"] for _ in escapes))
+        audit_found = int(sum(event_rng(1001, fault_idx).random() < P["audit_recall"] for n, t, pr, fault_idx in escapes))
 
     # ---------------- effort ----------------
     E = EFFORT
@@ -172,14 +204,14 @@ def run_one(cfg_name, seed, fx="aeb", P=None, return_detail=False):
     # coverage stub (assumption-determined; see ASSUMPTIONS_R1.md)
     target = 1.0 if asil_d else 0.80
     if c["coverage_loop"]:
-        cov = min(1.0, target + (0.0 if asil_d else rng.uniform(0.10, 0.16)))
+        cov = min(1.0, target + (0.0 if asil_d else rng_coverage.uniform(0.10, 0.16)))
     else:
-        cov = rng.uniform(0.70, 0.80) if c["tests"] == "same_agent" else rng.uniform(0.74, 0.86)
+        cov = rng_coverage.uniform(0.70, 0.80) if c["tests"] == "same_agent" else rng_coverage.uniform(0.74, 0.86)
 
     out = dict(cfg=cfg_name, seed=seed, fx=fx, injected=len(injected), escapes=len(escapes),
                st=esc_cat["St"], sm=esc_cat["Sm"], li=esc_cat["LI"], tc_first=tc_first,
                tc_final=tc_final, residual=len(aff_final), minutes=minutes, retries=n_retry,
-               escalations=escal, advisories=advisories, audit_found=audit_found,
+               escalations=escal, escalations_resolved=escal_resolved, unresolved_detected=unresolved, held=held, release_held=int(held > 0), advisories=advisories, audit_found=audit_found,
                field_escapes=len(escapes) - audit_found, coverage=cov,
                **{f"r_{k}": v for k, v in retries.items()},
                **{f"c_{k}": v for k, v in caught_by.items()})
