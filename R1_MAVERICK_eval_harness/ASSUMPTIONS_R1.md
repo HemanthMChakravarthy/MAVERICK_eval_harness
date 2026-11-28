@@ -1,3 +1,48 @@
+# Assumption register — harness v2.1.1
+
+All behavioural values are modelling assumptions, not empirical measurements. This release changes the rework semantics and random-number design relative to R1; numerical outputs are not directly comparable with the prior R1 release.
+
+| Parameter | Default | Treatment |
+|---|---:|---|
+| `p_llm` | 0.75 | Per-fault-class injection probability for LLM configurations. |
+| `p_human` | 0.15 | Per-fault-class injection probability for human authoring. |
+| `p_manual` | 0.05 | Per-fault-class injection probability for manual baseline. |
+| `critic_recall` | 0.70 | Assumed semantic/link-integrity critic recall. |
+| `critic_far` | 0.10 | Assumed critic false-alarm rate per artifact. |
+| `h_st`, `h_sm`, `h_li` | 0.90 / 0.85 / 0.80 | Assumed human review recall by fault category. |
+| `test_scale` | 1.0 | Multiplier on catalogued test detection probabilities. |
+| `p_fix_llm` / `p_fix_human` | 0.85 / 0.95 | Per-attempt rework resolution probabilities. |
+| `p_fix_escalation` | 0.95 | Assumed probability that human escalation resolves a defect after bounded rework fails. A modelling assumption, not a measurement; varied 0.80–0.99 in the GUA. |
+| `k_retry` / `k_retry_asil_d` | 3 / 5 | Maximum rework attempts before escalation. |
+| `corr` | 0.0 | Assumed probability of shared critic–generator blind spot. |
+| `audit_recall` | 0.85 | Assumed post-hoc audit recall for B5. |
+| Effort parameters | See `params.py` | Assumed authoring, review, rework, disposition, and escalation minutes. |
+| Coverage | Deterministic stub | Assumption-determined; not empirical test coverage evidence. |
+
+## Randomness and pairing
+
+Injection, review-policy, coverage, detection, repair, escalation, and audit events use separate deterministic streams. Detection draws are keyed to the experiment seed, fault instance, and a stable layer identifier (common random numbers across configurations). A different number of repair attempts therefore cannot shift detection draws for later faults. This improves causal isolation and reproducibility; it does not validate the chosen probability distributions.
+
+## Rework state semantics
+
+A defect is removed from the residual population only when a repair attempt succeeds or the separate human-escalation resolution event succeeds. If both paths fail, the defect remains in the pipeline and may be detected by later controls. If the unresolved detection came from a deterministic blocking check (ledger invariant or ALM existence check), the release gate re-evaluates that check and withholds the release (`held`); otherwise an unresolved defect is counted as an escape. `unresolved_detected` counts failed resolution events, not necessarily unique defects.
+
+## Ledger scope and threat model
+
+The ledger hash covers artifact identity and classification fields, payload, links, version, and previous hash. The in-memory revision history is checked locally. This detects accidental or uncoordinated changes to retained records, but it is not a cryptographically authenticated audit service: there are no signatures, external anchors, access controls, or durable append-only storage.
+
+I11 requires an explicit `verdict: pass`; missing and non-pass verdicts are violations. Result links must target supported test artifact types.
+
+## Evidence boundary
+
+Deterministic graph-invariant tests establish only that the implemented structural rules fire on the tested mutations. Semantic fault detection, human review, LLM critic behaviour, repair effectiveness, escalation effectiveness, and effort remain probabilistic assumptions. B6–B8 remain mechanism emulations, not executions of the original frameworks.
+
+## ASIL-D second review and effort
+The ASIL-D second review is an assumed additional detection layer (recall 0.50); the
+simulation does not model reviewer identity, expertise, or an access-control workflow.
+Effort results are dominated by the assumed LLM drafting factor (0.05 of human
+authoring minutes) and are estimates, not measured productivity.
+
 # Assumption register — harness v2.0 (revision R1)
 
 All values are modelling assumptions, not measurements. "GUA range" is the
