@@ -3,7 +3,7 @@
     python -m maverick_r1.experiments --out results_r1 [--quick]
 """
 from __future__ import annotations
-import argparse, json, os, time
+import argparse, json, os, platform, sys, time
 import numpy as np, pandas as pd
 from .sim import run_one, fixture
 from .configs import C, MAIN
@@ -31,7 +31,9 @@ def summarize(df):
             residual=g.residual.mean(), minutes=g.minutes.mean(), minutes_ci=S.boot_ci(g.minutes),
             retries=g.retries.mean(),
             **{k: g[k].mean() for k in g.columns if k.startswith("r_")},
-            escalations=g.escalations.mean(), advisories=g.advisories.mean(),
+            escalations=g.escalations.mean(), escalations_resolved=g.escalations_resolved.mean(),
+            unresolved_detected=g.unresolved_detected.mean(), held=g.held.mean(),
+            release_held_rate=g.release_held.mean(), advisories=g.advisories.mean(),
             field_escapes=g.field_escapes.mean(), coverage=g.coverage.mean(),
             injected=g.injected.mean(),
             **{k: int(g[k].sum()) for k in g.columns if k.startswith("c_")}))
@@ -89,7 +91,7 @@ def audit_sweep(seeds=500):
 GUA_RANGES = dict(
     p_llm=(0.30, 0.90), p_human=(0.05, 0.30), critic_recall=(0.40, 0.90), critic_far=(0.02, 0.25),
     corr=(0.0, 0.5), h_st=(0.75, 0.98), h_sm=(0.60, 0.95), h_li=(0.50, 0.90), fatigue_slope=(0.0, 0.6),
-    test_scale=(0.5, 1.5), p_fix_llm=(0.60, 0.95), p_self_approval=(0.0, 0.4),
+    test_scale=(0.5, 1.5), p_fix_llm=(0.60, 0.95), p_fix_escalation=(0.80, 0.99), p_self_approval=(0.0, 0.4),
     llm_reviewer_recall=(0.2, 0.7), release_st=(0.25, 0.70), audit_recall=(0.6, 0.95))
 GUA_CFGS = ["M", "B3", "B4", "B5", "B6", "B7", "B8", "M-ledger", "M-critic", "M-policy"]
 
@@ -107,6 +109,7 @@ def gua(points=256, seeds=100):
             rec[f"tcF_{c}"] = g.tc_final.mean(); rec[f"tcFmin_{c}"] = g.tc_final.min()
             rec[f"st_{c}"] = g.st.sum(); rec[f"tc1_{c}"] = g.tc_first.mean()
             rec[f"res_{c}"] = g.residual.mean(); rec[f"min_{c}"] = g.minutes.mean()
+            rec[f"held_{c}"] = g.release_held.mean()
         recs.append(rec)
     G = pd.DataFrame(recs)
     win = {c: float((G["leak_M"] < G[f"leak_{c}"]).mean()) for c in GUA_CFGS if c != "M"}
@@ -160,7 +163,12 @@ def main():
     G, gsum = gua(24 if a.quick else 256, 30 if a.quick else 100); G.to_csv(f"{a.out}/gua_points.csv", index=False)
     ev = evidence_classes(G)
     json.dump(dict(break_even=be, mechanism_tests=mt, gua=gsum, evidence_classes=ev,
-                   seconds=time.time() - t0, seeds=seeds), open(f"{a.out}/summary.json", "w"), indent=1, default=str)
+                   seconds=time.time() - t0, seeds=seeds,
+                   gua_design=dict(points=24 if a.quick else 256, seeds=30 if a.quick else 100,
+                                   ranges=GUA_RANGES, configs=GUA_CFGS),
+                   environment=dict(python=sys.version.split()[0], platform=platform.platform(),
+                                    numpy=np.__version__, pandas=pd.__version__),
+                   harness_version="2.1.1"), open(f"{a.out}/summary.json", "w"), indent=1, default=str)
     print("done in", round(time.time() - t0, 1), "s")
 
 if __name__ == "__main__":
